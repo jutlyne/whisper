@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Storage (recordings, transcripts, metadata)
+storage/recordings/
+storage/transcripts/
+storage/metadata/
+
+# Whisper / AI models
+models/
+
+# Claude
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

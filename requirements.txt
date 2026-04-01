@@ -1,0 +1,7 @@
+PySide6
+faster-whisper
+numpy<2
+soundcard
+soundfile
+librosa
+scikit-learn

@@ -1,0 +1,12 @@
+from pathlib import Path
+
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+PYTHON_DIR = ROOT_DIR / "python"
+
+PYTHON_STORAGE_DIR = PYTHON_DIR / "storage"
+PYTHON_RECORDINGS_DIR = PYTHON_STORAGE_DIR / "recordings"
+PYTHON_METADATA_DIR = PYTHON_STORAGE_DIR / "metadata"
+PYTHON_TRANSCRIPTS_DIR = PYTHON_STORAGE_DIR / "transcripts"
+PYTHON_TEMP_DIR = PYTHON_STORAGE_DIR / "temp"
+PYTHON_MODELS_DIR = PYTHON_DIR / "models"
