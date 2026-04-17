@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -162,9 +163,20 @@ class CloudRunService:
     def set_bucket(self, bucket_name: str) -> None:
         self.gcs_bucket = bucket_name
 
+    @staticmethod
+    def _resolve_path(path: str) -> str:
+        """Resolve relative paths against exe dir (frozen) or project dir (dev)."""
+        p = Path(path)
+        if p.is_absolute():
+            return str(p)
+        if getattr(sys, "frozen", False):
+            return str(Path(sys.executable).parent / p)
+        return str(Path(__file__).resolve().parent.parent / p)
+
     def _load_credentials(self, path: str) -> None:
+        resolved = self._resolve_path(path)
         self._credentials = service_account.Credentials.from_service_account_file(
-            path, scopes=_SCOPES,
+            resolved, scopes=_SCOPES,
         )
 
     def _get_credentials(self):
