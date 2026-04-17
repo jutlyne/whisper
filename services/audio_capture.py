@@ -1,5 +1,5 @@
 import threading
-from contextlib import ExitStack
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +24,17 @@ class AudioCaptureService:
         self._stop_event = threading.Event()
         self._output_path: Path | None = None
         self._error: Exception | None = None
+        self._chunk_callback: Callable[[np.ndarray | None, np.ndarray | None], None] | None = None
+
+    def set_chunk_callback(
+        self,
+        callback: Callable[[np.ndarray | None, np.ndarray | None], None] | None,
+    ) -> None:
+        """Đăng ký callback nhận (mic_chunk, sys_chunk) mỗi 100ms khi đang ghi.
+        Callback chạy trong audio thread — phải non-blocking.
+        Truyền None để huỷ đăng ký.
+        """
+        self._chunk_callback = callback
 
     def list_audio_devices(self) -> dict[str, list[dict[str, str]]]:
         microphones = [
@@ -235,7 +246,16 @@ class AudioCaptureService:
         ) as recorder:
             while not self._stop_event.is_set():
                 chunk = recorder.record(numframes=self.chunk_frames)
-                wav_file.write(self._prepare_chunk(chunk))
+                prepared = self._prepare_chunk(chunk)
+                wav_file.write(prepared)
+                if self._chunk_callback is not None:
+                    try:
+                        if include_loopback:
+                            self._chunk_callback(None, prepared)
+                        else:
+                            self._chunk_callback(prepared, None)
+                    except Exception:
+                        pass
 
     def _record_mixed_sources(
         self,
@@ -244,60 +264,81 @@ class AudioCaptureService:
         microphone_id: str | None,
         loopback_id: str | None,
     ) -> None:
-        microphone_source = (
-            sc.get_microphone(id=microphone_id)
-            if microphone_id
-            else None
-        )
-        loopback_source = (
-            sc.get_microphone(id=loopback_id, include_loopback=True)
-            if loopback_id
-            else None
-        )
+        import queue as _q
 
-        if microphone_source is None and loopback_source is None:
+        if not microphone_id and not loopback_id:
             raise RuntimeError("Khong co nguon audio nao de mix.")
 
-        mic_context = (
-            microphone_source.recorder(
-                samplerate=self.sample_rate,
-                channels=self.channels,
-            )
-            if microphone_source
-            else None
-        )
-        loopback_context = (
-            loopback_source.recorder(
-                samplerate=self.sample_rate,
-                channels=self.channels,
-            )
-            if loopback_source
-            else None
-        )
+        # Mỗi nguồn chạy trong thread riêng để tránh sequential blocking
+        # → không còn WASAPI buffer overflow gây tiếng tạch
+        mic_queue: _q.Queue[np.ndarray | None] = _q.Queue(maxsize=100)
+        loopback_queue: _q.Queue[np.ndarray | None] = _q.Queue(maxsize=100)
 
-        with ExitStack() as stack:
-            mic_recorder = (
-                stack.enter_context(mic_context)
-                if mic_context
-                else None
+        def _capture(source_id: str, include_loopback: bool, out: _q.Queue) -> None:
+            source = sc.get_microphone(id=source_id, include_loopback=include_loopback)
+            if source is None:
+                out.put(None)
+                return
+            with source.recorder(samplerate=self.sample_rate, channels=self.channels) as rec:
+                while not self._stop_event.is_set():
+                    chunk = rec.record(numframes=self.chunk_frames)
+                    prepared = self._prepare_chunk(chunk)
+                    try:
+                        out.put_nowait(prepared)
+                    except _q.Full:
+                        try:
+                            out.get_nowait()   # drop oldest khi queue đầy
+                            out.put_nowait(prepared)
+                        except (_q.Empty, _q.Full):
+                            pass
+            out.put(None)  # sentinel
+
+        cap_threads: list[threading.Thread] = []
+        if microphone_id:
+            t = threading.Thread(
+                target=_capture, args=(microphone_id, False, mic_queue), daemon=True
             )
-            loopback_recorder = (
-                stack.enter_context(loopback_context)
-                if loopback_context
-                else None
+            cap_threads.append(t)
+            t.start()
+        if loopback_id:
+            t = threading.Thread(
+                target=_capture, args=(loopback_id, True, loopback_queue), daemon=True
             )
-            while not self._stop_event.is_set():
-                mic_chunk = (
-                    mic_recorder.record(numframes=self.chunk_frames)
-                    if mic_recorder is not None
-                    else None
-                )
-                loopback_chunk = (
-                    loopback_recorder.record(numframes=self.chunk_frames)
-                    if loopback_recorder is not None
-                    else None
-                )
-                wav_file.write(self._mix_chunks(mic_chunk, loopback_chunk))
+            cap_threads.append(t)
+            t.start()
+
+        has_mic = bool(microphone_id)
+        has_loopback = bool(loopback_id)
+
+        while not self._stop_event.is_set():
+            mic_chunk: np.ndarray | None = None
+            loopback_chunk: np.ndarray | None = None
+
+            if has_mic:
+                try:
+                    mic_chunk = mic_queue.get(timeout=0.5)
+                except _q.Empty:
+                    continue
+                if mic_chunk is None:   # capture thread died
+                    break
+
+            if has_loopback:
+                try:
+                    loopback_chunk = loopback_queue.get(timeout=0.5)
+                except _q.Empty:
+                    pass   # ghi mic-only chunk nếu loopback chưa sẵn
+                if loopback_chunk is None:
+                    break
+
+            wav_file.write(self._mix_chunks(mic_chunk, loopback_chunk))
+            if self._chunk_callback is not None:
+                try:
+                    self._chunk_callback(mic_chunk, loopback_chunk)
+                except Exception:
+                    pass
+
+        for t in cap_threads:
+            t.join(timeout=2)
 
     @staticmethod
     def _prepare_chunk(chunk: np.ndarray) -> np.ndarray:

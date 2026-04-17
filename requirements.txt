@@ -1,7 +1,9 @@
 PySide6
-faster-whisper
 numpy<2
 soundcard
 soundfile
-librosa
-scikit-learn
+google-cloud-storage>=2.16.0
+google-auth>=2.0.0
+requests
+python-dotenv
+websockets

@@ -52,6 +52,12 @@ class SessionStore:
             "transcriptPath": None,
             "diarizationPath": None,
             "errors": [],
+            # Cloud Run Job fields (populated when transcription job is submitted)
+            "gcsFolderUri": None,     # gs://bucket/{session_id}/
+            "executionName": None,    # Cloud Run execution resource name
+            "jobStatus": None,        # uploading|submitted|running|done|error|cancelled
+            "jobSubmittedAt": None,
+            "jobCompletedAt": None,
         }
         self.write_session(session)
         return session
@@ -112,6 +118,63 @@ class SessionStore:
             transcriptPath=str(transcript_path),
         )
         return transcript_path
+
+    def delete_session(self, session_id: str) -> None:
+        session = self.load_session(session_id)
+        for key in ("finalAudioPath", "tempAudioPath", "transcriptPath"):
+            path_str = session.get(key)
+            if path_str:
+                Path(path_str).unlink(missing_ok=True)
+        self.metadata_path(session_id).unlink(missing_ok=True)
+
+    def rename_session(self, session_id: str, new_title: str) -> None:
+        self.update_session(session_id, title=new_title.strip())
+
+    # ------------------------------------------------------------------
+    # Cloud Run Job helpers
+    # ------------------------------------------------------------------
+
+    def save_cloud_job(
+        self,
+        session_id: str,
+        *,
+        gcs_folder_uri: str,
+        execution_name: str,
+    ) -> dict:
+        """Called after a Cloud Run Job execution is successfully submitted."""
+        return self.update_session(
+            session_id,
+            gcsFolderUri=gcs_folder_uri,
+            executionName=execution_name,
+            jobStatus="submitted",
+            jobSubmittedAt=self._timestamp(),
+        )
+
+    def update_job_status(
+        self,
+        session_id: str,
+        *,
+        job_status: str,
+        error_message: str | None = None,
+    ) -> dict:
+        """Update polling result. job_status: running|done|error|cancelled"""
+        updates: dict = {"jobStatus": job_status}
+        if job_status == "done":
+            updates["jobCompletedAt"] = self._timestamp()
+            updates["status"] = "transcribed"
+        elif job_status == "error":
+            updates["status"] = "error"
+        session = self.update_session(session_id, **updates)
+        if error_message:
+            self.append_error(session_id, message=error_message, status=job_status)
+        return session
+
+    def list_pending_jobs(self) -> list[dict]:
+        """Return sessions whose Cloud Run job is still in-flight (submitted or running)."""
+        return [
+            s for s in self.list_sessions()
+            if s.get("jobStatus") in ("submitted", "running")
+        ]
 
     def read_transcript(self, transcript_path: str) -> dict[str, Any]:
         return self.read_json(Path(transcript_path))

@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+websockets
+transformers
+accelerate
+numpy<2
+deep-translator
+google-cloud-translate
+lingua-language-detector

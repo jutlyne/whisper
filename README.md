@@ -46,3 +46,9 @@ Or pass a WAV path explicitly:
 `pyannote.audio` does not have official Windows support, so
 `services/diarization_service.py` is currently a guarded spike with a safe
 fallback instead of an enabled production feature.
+& "c:\Users\kyne\OneDrive\Máy tính\MTT\python\.venv\Scripts\Activate.ps1"
+
+gcloud builds submit --tag gcr.io/{PROJECT_ID}/whisper-transcriber ./container
+gcloud run jobs create whisper-transcriber \
+  --image gcr.io/{PROJECT_ID}/whisper-transcriber \
+  --region asia-east1 --memory 4Gi --cpu 4 --task-timeout 3600
