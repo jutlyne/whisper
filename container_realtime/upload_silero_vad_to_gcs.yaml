@@ -1,0 +1,47 @@
+# Cloud Build: download Silero VAD JIT model and upload to GCS.
+#
+# Run:
+#   gcloud builds submit --no-source \
+#     --config=container_realtime/upload_silero_vad_to_gcs.yaml \
+#     --project=whisper-494002
+#
+# Result: gs://whisper-494002-models/silero-vad/silero_vad.jit
+
+substitutions:
+  _BUCKET: whisper-494002-models
+  _DEST_DIR: silero-vad
+  _SILERO_URL: https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.jit
+
+steps:
+  - name: python:3.11-slim-bookworm
+    id: download-silero
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+        mkdir -p /workspace/silero
+        echo "Downloading Silero VAD JIT from ${_SILERO_URL}..."
+        curl -fSL "${_SILERO_URL}" -o /workspace/silero/silero_vad.jit
+        echo "Download complete. Contents:"
+        ls -lh /workspace/silero
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: upload-to-gcs
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        echo "Uploading to gs://${_BUCKET}/${_DEST_DIR}/"
+        gcloud storage cp -r /workspace/silero/* "gs://${_BUCKET}/${_DEST_DIR}/"
+        echo "Upload done. Listing remote:"
+        gcloud storage ls -l --readable-sizes "gs://${_BUCKET}/${_DEST_DIR}/"
+
+options:
+  machineType: E2_HIGHCPU_8
+  diskSizeGb: 10
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 600s

@@ -1,0 +1,48 @@
+# Cloud Build: download faster-whisper-large-v3 (CTranslate2) and upload to GCS.
+# large-v3 is the full accurate model (turbo trades ~8% WER for speed).
+#
+# Run:
+#   gcloud builds submit --no-source \
+#     --config=container_realtime/upload_whisper_v3_to_gcs.yaml \
+#     --project=whisper-494002
+#
+# Result: gs://whisper-494002-models/whisper-large-v3-ct2/...
+
+substitutions:
+  _MODEL_ID: Systran/faster-whisper-large-v3
+  _BUCKET: whisper-494002-models
+  _DEST_DIR: whisper-large-v3-ct2
+
+steps:
+  - name: python:3.11-slim-bookworm
+    id: download-model
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        pip install --no-cache-dir "huggingface_hub[cli,hf_transfer]==0.26.2" hf_transfer
+        mkdir -p /workspace/model
+        echo "Downloading ${_MODEL_ID} from HuggingFace..."
+        HF_HUB_ENABLE_HF_TRANSFER=1 huggingface-cli download "${_MODEL_ID}" --local-dir /workspace/model
+        echo "Download complete. Contents:"
+        ls -lh /workspace/model
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: upload-to-gcs
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        echo "Uploading to gs://${_BUCKET}/${_DEST_DIR}/"
+        gcloud storage cp -r /workspace/model/* "gs://${_BUCKET}/${_DEST_DIR}/"
+        echo "Upload done. Listing remote:"
+        gcloud storage ls -l --readable-sizes "gs://${_BUCKET}/${_DEST_DIR}/"
+
+options:
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: 20
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 3600s

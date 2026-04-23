@@ -1,0 +1,99 @@
+# Cloud Build: download NLLB-200-distilled-1.3B, convert to CTranslate2 int8, upload to GCS.
+#
+# Run:
+#   gcloud builds submit --no-source \
+#     --config=container_realtime/upload_nllb_1_3b_ct2_to_gcs.yaml \
+#     --project=whisper-494002
+#
+# Result: gs://whisper-494002-models/nllb-200-distilled-1.3B-ct2/...
+#
+# Switch model in Cloud Run:
+#   gcloud run services update whisper-realtime \
+#     --region asia-southeast1 --project=whisper-494002 \
+#     --set-env-vars NLLB_MODEL=1.3B
+
+substitutions:
+  _MODEL_ID: facebook/nllb-200-distilled-1.3B
+  _BUCKET: whisper-494002-models
+  _DEST_DIR: nllb-200-distilled-1.3B-ct2
+
+steps:
+  - name: python:3.11-slim-bookworm
+    id: download-convert
+    entrypoint: bash
+    env:
+      - HF_HUB_ENABLE_HF_TRANSFER=1
+      - TRANSFORMERS_NO_ADVISORY_WARNINGS=1
+      - PYTHONUNBUFFERED=1
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "=== Install dependencies ==="
+        apt-get update && apt-get install -y --no-install-recommends \
+          git \
+          ca-certificates \
+        && rm -rf /var/lib/apt/lists/*
+
+        pip install --no-cache-dir --prefer-binary \
+          "huggingface_hub[cli,hf_transfer]==0.26.2" \
+          "hf_transfer" \
+          "ctranslate2==4.5.0" \
+          "transformers==4.44.2" \
+          "sentencepiece==0.2.0" \
+          "numpy<2"
+
+        pip install --no-cache-dir --prefer-binary \
+          "torch==2.4.1" \
+          --index-url https://download.pytorch.org/whl/cpu
+
+        mkdir -p /workspace/hf_model /workspace/ct2_model
+
+        echo "=== Download model: ${_MODEL_ID} ==="
+        huggingface-cli download "${_MODEL_ID}" \
+          --local-dir /workspace/hf_model \
+          --local-dir-use-symlinks False \
+          --resume-download
+
+        echo "=== Convert to CTranslate2 (int8_float16) ==="
+        ct2-transformers-converter \
+          --model /workspace/hf_model \
+          --output_dir /workspace/ct2_model \
+          --quantization int8_float16 \
+          --force
+
+        echo "=== Copy tokenizer files ==="
+        cp /workspace/hf_model/sentencepiece.bpe.model   /workspace/ct2_model/ || true
+        cp /workspace/hf_model/tokenizer.json            /workspace/ct2_model/ 2>/dev/null || true
+        cp /workspace/hf_model/tokenizer_config.json     /workspace/ct2_model/ 2>/dev/null || true
+        cp /workspace/hf_model/special_tokens_map.json   /workspace/ct2_model/ 2>/dev/null || true
+
+        echo "=== Cleanup HF cache ==="
+        rm -rf ~/.cache/huggingface
+
+        echo "=== CT2 model contents ==="
+        ls -lh /workspace/ct2_model
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: upload
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "=== Upload to GCS ==="
+        gcloud storage cp -r /workspace/ct2_model/* \
+          "gs://${_BUCKET}/${_DEST_DIR}/"
+
+        echo "=== Verify upload ==="
+        gcloud storage ls -l --readable-sizes \
+          "gs://${_BUCKET}/${_DEST_DIR}/"
+
+options:
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: 50
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 3600s
